@@ -1,0 +1,383 @@
+# (c) 2020 Amazon Web Services, Inc. or its affiliates. All Rights Reserved. This AWS Content
+# is provided subject to the terms of the AWS Customer Agreement available at
+# https://aws.amazon.com/agreement/ or other written agreement between Customer
+# and Amazon Web Services, Inc.
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: This template provisions the resources required to include this account as a target account in the CICD implementation (RCS-1686)
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    - Label: 
+        default: CICD Account Setup
+      Parameters: 
+      - pClientName
+      - pCFNStackName
+      - pCicdAccountId
+      - pDomainName
+      - pCertificate
+    ParameterLabels: 
+      pClientName: 
+        default: Client Name
+      pCFNStackName: 
+        default: CloudFormation Stack Name
+      pCicdAccountId:
+        default: CICD Account Number
+      pDomainName: 
+        default: API Gateway Custom Domain Name
+      pCertificate: 
+        default: Custom Domain Name ACM Certificate ARN 
+
+Parameters:
+
+  pClientName:
+    Type: String 
+    Description: 'Enter the client name here'
+
+  pCFNStackName:
+    Type: String 
+    Description: 'Name your CloudFormation deployment stack here'
+
+  pCicdAccountId:
+    Type: String 
+    Description: 'Enter the CICD account ID here'
+    Default: ''
+
+  pDomainName:
+    Type: String 
+    Description: 'Enter your API gateway custom domain name here'
+
+  pCertificate:
+    Type: String 
+    Description: 'Enter the ACM certificate ARN for your custom domain name here'
+
+Resources:
+
+  rArtifactBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Sub 'source-artifact-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Resource
+          Value: !Sub ${AWS::StackName}-cicd-target
+  rFrontendBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Sub 'frontend-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        IgnorePublicAcls: true
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Resource
+          Value: !Sub ${AWS::StackName}-cicd-target
+
+  rDomainName:
+    Type: AWS::ApiGateway::DomainName
+    Properties: 
+      DomainName: !Ref pDomainName
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      RegionalCertificateArn: !Ref pCertificate
+      SecurityPolicy: TLS_1_2
+      Tags:
+        - Key: Resource
+          Value: !Sub ${AWS::StackName}-cicd-target
+
+  rBasePathMapping:
+    Type: AWS::ApiGateway::BasePathMapping
+    Properties:
+      BasePath: ''
+      DomainName: !Ref pDomainName
+      RestApiId: !Ref rFrontendApi 
+      Stage: !Ref rFrontendStage
+
+  rFrontendApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Parameters:
+        endpointConfigurationTypes: REGIONAL
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      Body:
+          swagger: "2.0"
+          info:
+            version: "2020-06-09T15:31:21Z"
+            title: 'Frontend-API'
+          host: !Sub '${pDomainName}'
+          schemes:
+          - "https"
+          paths:
+            /{proxy+}:
+              x-amazon-apigateway-any-method:
+                parameters:
+                - name: "proxy"
+                  in: "path"
+                  required: true
+                  type: "string"
+                responses:
+                  "200":
+                    description: "200 response"
+                    headers:
+                      Content-Type:
+                        type: "string"
+                x-amazon-apigateway-integration:
+                  credentials: !GetAtt rFrontendRole.Arn
+                  uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:s3:path/${rFrontendBucket}/{key}"
+                  responses:
+                    default:
+                      statusCode: "200"
+                      responseParameters:
+                        method.response.header.Content-Type: "integration.response.header.Content-Type"
+                  requestParameters:
+                    integration.request.path.key: "method.request.path.proxy"
+                  passthroughBehavior: "when_no_match"
+                  httpMethod: "GET"
+                  type: "aws"
+      Tags:
+        - Key: Resource
+          Value: !Sub ${AWS::StackName}-cicd-target
+
+  rFrontendStage:
+    Type: AWS::ApiGateway::Stage
+    Properties: 
+      DeploymentId: !Ref rFrontendDeployment
+      RestApiId: !Ref rFrontendApi
+      StageName: 'frontendapi'
+      Tags:
+        - Key: Resource
+          Value: !Sub ${AWS::StackName}-cicd-target
+
+  rFrontendDeployment:
+    Type: 'AWS::ApiGateway::Deployment'
+    Properties:
+      RestApiId: !Ref rFrontendApi
+      Description: Frontend-deployment
+
+  rFrontendRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'frontend-${AWS::Region}-role'
+      AssumeRolePolicyDocument:    
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 
+              - apigateway.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: 'cicd-frontend-policy'
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:Get*
+                  - s3:List*
+                Resource:
+                  - Fn::Sub:
+                    - ${bucketarn}/*
+                    - bucketarn: !GetAtt rFrontendBucket.Arn
+                  - !GetAtt rFrontendBucket.Arn
+      Tags:
+        - Key: Resource
+          Value: !Sub ${AWS::StackName}-cicd-target
+
+  rCicdCodepipelineRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub cicd-codepipeline-role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: cicd-codepipeline-policy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:  
+              - Action:
+                  - 'iam:PassRole'
+                Resource: '*'
+                Effect: Allow
+                Condition:
+                  StringEqualsIfExists:
+                    'iam:PassedToService':
+                      - cloudformation.amazonaws.com
+                      - elasticbeanstalk.amazonaws.com
+                      - ec2.amazonaws.com
+                      - ecs-tasks.amazonaws.com
+              - Action:
+                  - 's3:*'
+                Resource: !GetAtt rArtifactBucket.Arn
+                Effect: Allow
+              - Action:
+                  - 's3:*'
+                Resource: 
+                  - Fn::Sub:
+                    - ${bucketarn}/*
+                    - bucketarn: !GetAtt rArtifactBucket.Arn 
+                Effect: Allow
+              - Action:
+                  - 'cloudformation:*'
+                Resource: '*'
+                Effect: Allow
+      Tags:
+        - Key: Resource
+          Value: !Sub ${AWS::StackName}-cicd-target
+
+  rCicdCodepipelineCfnRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub cicd-codepipeline-cfn-role
+      AssumeRolePolicyDocument: 
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      ManagedPolicyArns: 
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AdministratorAccess'
+      Policies:
+        - PolicyName: cicd-s3-artifact-policy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:ListBucket'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::cicd-source-artifact-${pCicdAccountId}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::cicd-source-artifact-${pCicdAccountId}/*'
+      Tags:
+        - Key: Resource
+          Value: !Sub ${AWS::StackName}-cicd-target
+
+  rCicdLambdaCopyartifactRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub cicd-lambda-copyartifact-role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: 
+                - !Sub 'arn:${AWS::Partition}:iam::${pCicdAccountId}:role/cicd-action-copy-artifact-role'
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: cicd-lambda-copyartifact-policy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:PutObject'
+                  - 's3:ListBucket'
+                Resource:
+                  - !GetAtt rArtifactBucket.Arn
+                  - Fn::Sub:
+                    - ${bucketarn}/*
+                    - bucketarn: !GetAtt rArtifactBucket.Arn
+                  - !GetAtt rFrontendBucket.Arn
+                  - Fn::Sub:
+                    - ${bucketarn}/*
+                    - bucketarn: !GetAtt rFrontendBucket.Arn
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:ListBucket'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::cicd-source-artifact-${pCicdAccountId}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::cicd-source-artifact-${pCicdAccountId}/*'
+              - Effect: Allow
+                Action:
+                  - 'kms:Decrypt'
+                  - 'kms:ReEncryptTo'
+                  - 'kms:GenerateDataKey'
+                  - 'kms:GenerateDataKeyWithoutPlaintext'
+                  - 'kms:DescribeKey'
+                  - 'kms:GenerateDataKeyPairWithoutPlaintext'
+                  - 'kms:GenerateDataKeyPair'
+                  - 'kms:ReEncryptFrom'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:kms:*:${pCicdAccountId}:key/*'
+      Tags:
+        - Key: Resource
+          Value: !Sub ${AWS::StackName}-cicd-target
+
+  rClientPipeline: 
+    Type: AWS::CodePipeline::Pipeline 
+    Properties:
+      Name: !Sub 'cicd-pipeline-${pClientName}'
+      RoleArn: !GetAtt rCicdCodepipelineRole.Arn
+      Stages: 
+        - 
+          Name: Source 
+          Actions: 
+            - 
+              Name: SourceAction
+              ActionTypeId: 
+                Category: Source 
+                Owner: AWS 
+                Version: 1 
+                Provider: S3 
+              OutputArtifacts: 
+                - 
+                  Name: SourceArtifact 
+              Configuration: 
+                S3Bucket: !Ref rArtifactBucket 
+                S3ObjectKey: 'codebuild/artifacts' 
+              RunOrder: 1
+        -
+          Name: Deploy
+          Actions:
+            -
+              Name: DeployAction
+              InputArtifacts:
+                - 
+                  Name: SourceArtifact 
+              ActionTypeId: 
+                Category: Deploy 
+                Owner: AWS 
+                Version: 1
+                Provider: CloudFormation 
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND,CAPABILITY_NAMED_IAM
+                StackName: !Sub 'cicd-pipeline-${pCFNStackName}'
+                RoleArn: !GetAtt rCicdCodepipelineCfnRole.Arn 
+                TemplatePath: 'SourceArtifact::packaged.yaml' 
+              RunOrder: 1
+      ArtifactStore: 
+        Type: S3 
+        Location: !Ref rArtifactBucket
+      Tags:
+        - Key: Resource
+          Value: !Sub ${AWS::StackName}-cicd-target

@@ -1,0 +1,766 @@
+# (c) 2020 Amazon Web Services, Inc. or its affiliates. All Rights Reserved. This AWS Content
+# is provided subject to the terms of the AWS Customer Agreement available at
+# https://aws.amazon.com/agreement/ or other written agreement between Customer
+# and Amazon Web Services, Inc.
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: This template will deploy the resources needed for the CICD account (RCS-1686)
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    - Label: 
+        default: CICD Account Setup
+      Parameters: 
+      - pCodeBuildProjectName
+      - pCodeBuildComputeType
+      - pCodeBuildBitBucketURL
+      - pCodeBuildBitBucketUserName
+      - pCodeBuildBitBucketPassword
+      - pCicdDynamoTable
+      - pCicdAccountMapDynamoTable
+      - pCicdGrantPermissionFunctionBucket
+      - pCicdGrantPermissionFunctionKey
+    ParameterLabels: 
+      pCodeBuildProjectName: 
+        default: CodeBuild Project Name
+      pCodeBuildBitBucketURL: 
+        default: BitBucket Repository URL
+      pCodeBuildBitBucketPassword:
+        default: BitBucket Repository Password
+      pCodeBuildBitBucketUserName: 
+        default: BitBucket Repository User Name
+      pCodeBuildComputeType: 
+        default: CodeBuild Compute Type
+      pCicdDynamoTable: 
+        default: CICD CodeBuild Info Table
+      pCicdAccountMapDynamoTable: 
+        default: CICD Mapping Table
+      pCicdGrantPermissionFunctionBucket: 
+        default: CicdGrantPermissionFunction Bucket
+      pCicdGrantPermissionFunctionKey: 
+        default: CicdGrantPermissionFunction Key
+
+Parameters:
+
+  pCodeBuildProjectName:
+    Type: String 
+    Description: 'Enter the name for your CodeBuild project'
+    Default: 'cicd-buildproject'
+  
+  pCodeBuildBitBucketURL:
+    Type: String 
+    Description: 'Enter the URL string for your BitBucket Repository'
+    Default: ''
+
+  pCodeBuildBitBucketPassword:
+    Type: String 
+    Description: 'Enter the password for your BitBucket Repository'
+    NoEcho: true
+
+  pCodeBuildBitBucketUserName:
+    Type: String 
+    Description: 'Enter the username for your BitBucket Repository'
+    Default: ''
+
+  pCodeBuildComputeType:
+    Type: String 
+    Description: 'Enter the code build compute type'
+    Default: BUILD_GENERAL1_MEDIUM
+    AllowedValues:
+      - BUILD_GENERAL1_SMALL
+      - BUILD_GENERAL1_MEDIUM
+      - BUILD_GENERAL1_LARGE
+
+  pCicdDynamoTable:
+    Type: String 
+    Description: 'Enter the name to be used for the CICD CodeBuild info table'
+    Default: 'cicd-codebuild-info-table'
+
+  pCicdAccountMapDynamoTable:
+    Type: String 
+    Description: 'Enter the name to be used for the CICD mapping table'
+    Default: 'cicd-account-map-table'
+
+  pCicdGrantPermissionFunctionBucket:
+    Type: String 
+    Description: 'Enter the bucket name containing CicdGrantPermissionFunction code'
+    Default: ''
+
+  pCicdGrantPermissionFunctionKey:
+    Type: String 
+    Description: 'CicdGrantPermissionFunction code zip file path'
+    Default: 'CicdGrantPermissionFunction.zip'
+
+Resources:
+
+  rArtifactBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Sub 'cicd-source-artifact-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref rCicdCmk
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Resource
+          Value: !Sub ${AWS::StackName}-cicd
+  rArtifcatBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties: 
+        Bucket: !Ref rArtifactBucket
+        PolicyDocument:
+          Statement:
+            - Sid: "grant artifact bucket permissions"
+              Action: 
+                - s3:Get*
+                - s3:List*
+              Effect: 'Allow'
+              Principal:
+                AWS:
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
+                  - !GetAtt rCicdUser.Arn
+              Resource:
+                - !GetAtt rArtifactBucket.Arn
+                - Fn::Sub:
+                    - ${bucketarn}/*
+                    - bucketarn: !GetAtt rArtifactBucket.Arn
+  rCicdUser:
+    Type: AWS::IAM::User
+    Properties: 
+      UserName: CICDUser
+      Tags:
+        - Key: Resource
+          Value: !Sub ${AWS::StackName}-cicd
+
+  rCicdBuildProjectSourceCreds:
+    Type: 'AWS::CodeBuild::SourceCredential'
+    Properties:
+      Token: !Ref pCodeBuildBitBucketPassword
+      ServerType: BITBUCKET
+      Username: !Ref pCodeBuildBitBucketUserName
+      AuthType: BASIC_AUTH
+
+  rCicdBuildProject:
+    Type: AWS::CodeBuild::Project
+    DependsOn: rCicdBuildProjectSourceCreds
+    Properties:
+      Name: cicd-buildproject
+      ServiceRole: !GetAtt rCicdCodebuildRole.Arn
+      Artifacts:
+        Type: S3
+        Location: !Ref rArtifactBucket
+        Packaging: ZIP
+        NamespaceType: BUILD_ID
+        Name: SourceArtifact.zip
+        EncryptionDisabled: false
+      EncryptionKey: !GetAtt rCicdCmk.Arn
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: !Ref pCodeBuildComputeType
+        Image: aws/codebuild/standard:4.0
+      Source:
+        Type: BITBUCKET
+        Location: !Ref pCodeBuildBitBucketURL
+      Triggers:
+        Webhook: true 
+        FilterGroups:
+          - - Type: EVENT
+              Pattern: PUSH
+            - Type: HEAD_REF
+              Pattern: refs/tags/
+          - - Type: EVENT
+              Pattern: PUSH
+            - Type: HEAD_REF
+              Pattern: refs/heads/master
+      Tags:
+        - Key: Resource
+          Value: !Sub ${AWS::StackName}-cicd
+
+  rCicdCodebuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: 'cicd-codebuild-role'
+      AssumeRolePolicyDocument:    
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 
+              - codebuild.amazonaws.com
+            Action: 
+             - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: 'cicd-codebuild-policy'
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 'dynamodb:PutItem'
+                Resource: 
+                  - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${rCicdDynamoTable}'
+              - Effect: Allow
+                Action:
+                  - 'kms:Decrypt'
+                  - 'kms:GenerateDataKeyWithoutPlaintext'
+                  - 'kms:GenerateDataKeyPairWithoutPlaintext'
+                  - 'kms:GenerateDataKeyPair'
+                  - 'kms:ReEncryptFrom'
+                  - 'kms:GenerateDataKey'
+                  - 'kms:ReEncryptTo'
+                  - 'kms:DescribeKey'
+                Resource: !GetAtt rCicdCmk.Arn
+              - Effect: Allow
+                Action:
+                  - 'codebuild:CreateReportGroup'
+                  - 'codebuild:CreateReport'
+                  - 'codebuild:UpdateReport'
+                  - 'codebuild:BatchPutTestCases'
+                Resource: 
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:report-group/${pCodeBuildProjectName}-*'
+              - Effect: Allow
+                Action:
+                  - 's3:PutObject'
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::${rArtifactBucket}
+                  - !Sub arn:${AWS::Partition}:s3:::${rArtifactBucket}/*
+              - Effect: Allow
+                Action:
+                  - 'logs:PutLogEvents'
+                  - 'logs:CreateLogStream'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${pCodeBuildProjectName}'
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${pCodeBuildProjectName}:*'
+              - Effect: Allow
+                Action: 'logs:CreateLogGroup'
+                Resource: '*'
+      Tags:
+        - Key: Resource
+          Value: !Sub ${AWS::StackName}-cicd
+
+  rActionFunctionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: cicd-action-function-role
+      AssumeRolePolicyDocument: 
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: cicd-action-function-policy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 'logs:CreateLogGroup'
+                Resource: 
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:*'
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/cicd-action-function:*' 
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:ListTables'
+                  - 'dynamodb:Scan'
+                  - 'dynamodb:Query'
+                  - 'dynamodb:DescribeTable'
+                  - 'dynamodb:GetItem'
+                  - 'dynamodb:GetRecords'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${pCicdAccountMapDynamoTable}'
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:ListTables'
+                  - 'dynamodb:DescribeStream'
+                  - 'dynamodb:ListStreams'
+                  - 'dynamodb:DescribeTable'
+                  - 'dynamodb:GetShardIterator'
+                  - 'dynamodb:GetRecords'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${pCicdDynamoTable}'
+                  - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${pCicdDynamoTable}/stream/*'
+              - Effect: Allow
+                Action:
+                  - 'states:StartExecution'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:copy-codebuild-artifacts'
+      Tags:
+        - Key: Resource
+          Value: !Sub ${AWS::StackName}-cicd
+
+  rActionFunctionCopyArtifactRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: cicd-action-copy-artifact-role
+      AssumeRolePolicyDocument: 
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: cicd-action-copy-artifact-policy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 'logs:CreateLogGroup'
+                Resource: 
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:*'
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/cicd-action-copy-artifact:*'
+              - Effect: Allow
+                Action: 'sts:AssumeRole'
+                Resource: 
+                  - !Sub 'arn:${AWS::Partition}:iam::*:role/cicd-lambda-copyartifact-role'
+      Tags:
+        - Key: Resource
+          Value: !Sub ${AWS::StackName}-cicd
+
+  rStepFunctionCopyArtifactRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: cicd-stepfunction-copyartifacts-role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+            Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: cicd-lambda-copyartifact-policy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 'lambda:InvokeFunction'
+                Resource: !GetAtt rCicdActionCopyArtifactFunction.Arn
+              - Effect: Allow
+                Action:
+                  - 'xray:PutTelemetryRecords'
+                  - 'xray:GetSamplingRules'
+                  - 'xray:GetSamplingTargets'
+                  - 'xray:PutTraceSegments'
+                Resource: '*'
+      Tags:
+        - Key: Resource
+          Value: !Sub ${AWS::StackName}-cicd
+
+  rCicdGrantPermissionFunctionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: cicd-grant-permission-role
+      AssumeRolePolicyDocument: 
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: cicd-grant-permission-policy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 'logs:CreateLogGroup'
+                Resource: 
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:*'
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/cicd-grant-permission:*'
+              - Effect: Allow
+                Action:
+                  - 'kms:PutKeyPolicy'
+                  - 'kms:GetKeyPolicy'
+                Resource: !GetAtt rCicdCmk.Arn
+              - Effect: Allow
+                Action:
+                  - 's3:PutBucketPolicy'
+                  - 's3:GetBucketPolicy'
+                Resource: !GetAtt rArtifactBucket.Arn
+      Tags:
+        - Key: Resource
+          Value: !Sub ${AWS::StackName}-cicd
+  rCicdDynamoTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref pCicdDynamoTable
+      StreamSpecification: 
+        StreamViewType: NEW_AND_OLD_IMAGES
+      AttributeDefinitions: 
+        - 
+          AttributeName: "commitid"
+          AttributeType: "S"
+
+        - 
+          AttributeName: "tag"
+          AttributeType: "S"
+
+      KeySchema: 
+        - 
+          AttributeName: "commitid"
+          KeyType: "HASH"
+        - 
+          AttributeName: "tag"
+          KeyType: "RANGE"
+      ProvisionedThroughput:
+        ReadCapacityUnits: "5"
+        WriteCapacityUnits: "5"
+      Tags:
+        - Key: Resource
+          Value: !Sub ${AWS::StackName}-cicd
+        
+  rDynamoStreamLambdaEventMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties: 
+      EventSourceArn:
+        Fn::GetAtt: [rCicdDynamoTable, StreamArn]
+      FunctionName: !GetAtt rCicdActionFunction.Arn
+      StartingPosition: LATEST
+
+  rCicdAccountMapDynamoTable: 
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref pCicdAccountMapDynamoTable
+      AttributeDefinitions: 
+        - 
+          AttributeName: "tag"
+          AttributeType: "S"
+
+      KeySchema: 
+        - 
+          AttributeName: "tag"
+          KeyType: "HASH"
+
+      ProvisionedThroughput:
+        ReadCapacityUnits: "5"
+        WriteCapacityUnits: "5"
+      Tags:
+        - Key: Resource
+          Value: !Sub ${AWS::StackName}-cicd
+
+  rCicdActionFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Environment:
+        Variables:
+          statemachine: !Ref rCopyArtifactStepFunction
+          cicdAccountMap: !Ref pCicdAccountMapDynamoTable
+      Description: Function to pass the account list and build information to the step function.
+      FunctionName: cicd-action-function
+      Timeout: 600
+      Runtime: python3.7
+      Role: !GetAtt rActionFunctionRole.Arn
+      Handler: index.lambda_handler
+      Code:
+        ZipFile: |
+          from __future__ import print_function # Python 2/3 compatibility
+          import boto3
+          import os
+          import json
+          from boto3.dynamodb.conditions import Key, Attr
+          from botocore.exceptions import ClientError
+          dynamodbclient = boto3.resource('dynamodb')
+          sfnclient = boto3.client('stepfunctions')
+
+          def lambda_handler(event, context):
+              tag=None
+              for record in event['Records']:
+                  if record['eventName'] in 'INSERT':
+                      print(record['dynamodb']['NewImage']['commitid']['S'])
+                      print(record['dynamodb']['NewImage']['tag']['S'])
+                      print(record['dynamodb']['NewImage']['buildid']['S'].split(':')[1])
+                      print('Successfully processed %s records.' % str(len(event['Records'])))
+                      tag=record['dynamodb']['NewImage']['tag']['S']
+                      codebuildid=record['dynamodb']['NewImage']['buildid']['S'].split(':')[1]
+                      
+                      if ('tag/' in tag) == True:
+                          tag=tag.split('/')[1]
+                          if tag[0] == 'v':
+                            tag=tag.split('-')[2]
+                            print(tag)
+                          else:
+                            print('Check tagging convention')
+                      
+                      try:
+                          table=dynamodbclient.Table(os.environ['cicdAccountMap'])
+                          response=table.get_item(
+                          Key={
+                              'tag': tag
+                              }
+                          )
+                          if 'Item' not in response or 'accountid' not in response['Item']:
+                              print('no such tag')
+                          else:
+                              resultlist=[]
+                              accountids = response['Item']['accountid']
+                              for acc_id in accountids.split(','):
+                                  print(acc_id)
+                                  resultlist.append({'codebuildid':codebuildid,'accountid':acc_id})
+                              
+                              output={'items':resultlist}
+                              print(json.dumps(output))
+                          
+                              sfnclient.start_execution(
+                                  stateMachineArn = os.environ['statemachine'],
+                                  input=json.dumps(output)
+                              )
+                              print('Accounts passed to state machine')
+                      except ClientError as e:
+                          print(e.response['Error']['Message'])
+                  
+                  else:
+                      print('Event type not insert')
+      Tags:
+        - Key: Resource
+          Value: !Sub ${AWS::StackName}-cicd
+
+  rCicdActionCopyArtifactFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Environment:
+        Variables:
+          sourcebucket: !Ref rArtifactBucket
+          awspartition: !Sub ${AWS::Partition}
+      Description: Function to copy artifacts to target accounts.
+      FunctionName: cicd-action-copy-artifact
+      Timeout: 600
+      Runtime: python3.7
+      Role: !GetAtt rActionFunctionCopyArtifactRole.Arn
+      Handler: index.lambda_handler
+      Code:
+        ZipFile: |
+          import boto3
+          import os
+          from botocore.exceptions import ClientError
+          sts_connection = boto3.client('sts')
+          aws_partition = os.environ['awspartition']
+
+          def lambda_handler(event, context):
+              acc_id=event['Input']['accountid']
+              codebuildid=event['Input']['codebuildid']
+              print(acc_id)
+
+              try:
+                  acct_b = sts_connection.assume_role(
+                      RoleArn="arn:%s:iam::%s:role/cicd-lambda-copyartifact-role" %(aws_partition, acc_id),
+                      RoleSessionName="cross_acct_lambda"
+                  )
+              
+                  ACCESS_KEY = acct_b['Credentials']['AccessKeyId']
+                  SECRET_KEY = acct_b['Credentials']['SecretAccessKey']
+                  SESSION_TOKEN = acct_b['Credentials']['SessionToken']
+                  
+                  s3client = boto3.client(
+                      's3',
+                      aws_access_key_id=ACCESS_KEY,
+                      aws_secret_access_key=SECRET_KEY,
+                      aws_session_token=SESSION_TOKEN,
+                  )
+                  target_bucket = "source-artifact-%s" %acc_id
+                  source_bucket = os.environ['sourcebucket']
+                  key= "%s/SourceArtifact.zip" %codebuildid
+                  copy_source = {'Bucket':source_bucket, 'Key':key}
+                  copyartifact=s3client.copy_object(Bucket=target_bucket, Key='codebuild/artifacts', CopySource=copy_source)
+                  print('Artifact copied successfully to %s bucket' %target_bucket)
+
+                  s3resource = boto3.resource(
+                      's3',
+                      aws_access_key_id=ACCESS_KEY,
+                      aws_secret_access_key=SECRET_KEY,
+                      aws_session_token=SESSION_TOKEN,
+                  )
+                  
+                  frontend_prefix = "%s/frontend/" %codebuildid
+                  frontend_target_bucket = "frontend-%s" %acc_id
+                  frontend_source_s3 = s3resource.Bucket(source_bucket)
+                  frontend_target_s3 = s3resource.Bucket(frontend_target_bucket)
+                  
+                  for obj in frontend_source_s3.objects.filter(Prefix=frontend_prefix):
+                      frontend_source = { 'Bucket': source_bucket,'Key': obj.key}
+                      frontend_key = obj.key[len(frontend_prefix):]
+                      frontend_obj = frontend_target_s3.Object(frontend_key)
+                      frontend_obj.copy(frontend_source)
+                  print('Frontend Artifacts copied successfully to %s bucket' %frontend_target_bucket)
+
+              except ClientError as e:
+                  print(e.response['Error']['Message'])
+      Tags:
+        - Key: Resource
+          Value: !Sub ${AWS::StackName}-cicd
+
+  rCicdGrantPermissionFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Environment:
+        Variables:
+          CMKArn: !Ref rCicdCmk
+          artifactBucket: !Ref rArtifactBucket
+          awspartition: !Sub ${AWS::Partition}
+      Description: Function to grant new CICD account access to S3 rArtifactBucket and KMS CMK
+      FunctionName: cicd-grant-permission
+      Timeout: 300
+      Runtime: python3.7
+      Role: !GetAtt rCicdGrantPermissionFunctionRole.Arn
+      Handler: lambda_function.lambda_handler
+      Code:
+        S3Bucket: !Ref pCicdGrantPermissionFunctionBucket
+        S3Key: !Ref pCicdGrantPermissionFunctionKey
+      Tags:
+        - Key: Resource
+          Value: !Sub ${AWS::StackName}-cicd
+
+  rCopyArtifactStepFunction:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      DefinitionSubstitutions:
+        CicdCopyLambdaFunction: !GetAtt rCicdActionCopyArtifactFunction.Arn
+        awspartition: !Sub ${AWS::Partition}
+      StateMachineName: copy-codebuild-artifacts
+      RoleArn: !GetAtt rStepFunctionCopyArtifactRole.Arn
+      DefinitionString: |-
+        {
+          "Comment": "To copy artifacts.",
+          "StartAt": "Copy Artifacts",
+          "States": {
+            "Copy Artifacts": {
+              "Type": "Map",
+              "Next": "Finish",
+              "ItemsPath": "$.items",
+              "Iterator": {
+                "StartAt": "Invoke Lambda function",
+                "States": {
+                  "Invoke Lambda function": {
+                    "Type": "Task",
+                    "Resource": "arn:${awspartition}:states:::lambda:invoke",
+                    "Parameters": {
+                        "FunctionName": "${CicdCopyLambdaFunction}",
+                        "Payload": {
+                        "Input.$": "$"
+                        }
+                    },
+                    "End": true
+                  }
+                }
+              }
+            },
+            "Finish": {
+              "Type": "Succeed"
+            }
+          }
+        }
+      Tags:
+        - Key: Resource
+          Value: !Sub ${AWS::StackName}-cicd
+
+  rCicdCmk:
+    Type: AWS::KMS::Key
+    Properties: 
+      Description: KMS key used to encrypt code build artifacts
+      Enabled: true
+      EnableKeyRotation: false
+      KeyUsage: ENCRYPT_DECRYPT
+      Tags: 
+        - Key: KeyUse
+          Value: cicd-cmk
+      KeyPolicy:
+        Id: key-consolepolicy-3
+        Version: 2012-10-17
+        Statement:
+        - Sid: Enable IAM User Permissions
+          Effect: Allow
+          Principal:
+            AWS:
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
+          Action: 'kms:*'
+          Resource: '*'
+        - Sid: Allow access for Key Administrators
+          Effect: Allow
+          Principal:
+            AWS:
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
+          Action:
+            - 'kms:Create*'
+            - 'kms:Describe*'
+            - 'kms:Enable*'
+            - 'kms:List*'
+            - 'kms:Put*'
+            - 'kms:Update*'
+            - 'kms:Revoke*'
+            - 'kms:Disable*'
+            - 'kms:Get*'
+            - 'kms:Delete*'
+            - 'kms:TagResource'
+            - 'kms:UntagResource'
+            - 'kms:ScheduleKeyDeletion'
+            - 'kms:CancelKeyDeletion'
+          Resource: '*'
+        - Sid: Allow use of the key
+          Effect: Allow
+          Principal:
+            AWS:
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
+              - !GetAtt rCicdUser.Arn
+          Action:
+            - 'kms:Encrypt'
+            - 'kms:Decrypt'
+            - 'kms:ReEncrypt*'
+            - 'kms:GenerateDataKey*'
+            - 'kms:DescribeKey'
+          Resource: '*'
+        - Sid: Allow attachment of persistent resources
+          Effect: Allow
+          Principal:
+            AWS:
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
+              - !GetAtt rCicdUser.Arn
+          Action:
+            - 'kms:CreateGrant'
+            - 'kms:ListGrants'
+            - 'kms:RevokeGrant'
+          Resource: '*'
+
+  rKmsAlias:
+    Type: AWS::KMS::Alias
+    Properties: 
+      AliasName: alias/cicd-cmk
+      TargetKeyId: !Ref rCicdCmk 
+
+Outputs: # CloudFormation Outputs Section
+  oCicdDynamoTable: 
+    Description: cicd-codebuild-info-table 
+    Value: !Ref rCicdDynamoTable
+  oCicdAccountMapDynamoTable:
+    Description: cicd-account-map-table 
+    Value: !Ref rCicdAccountMapDynamoTable
+  oArtifactBucket: 
+    Description: cicd account source artifact S3 bucket
+    Value: !Ref rArtifactBucket
+
+                
+
+       
