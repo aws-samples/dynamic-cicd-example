@@ -1,0 +1,9 @@
+awspolicy-0.0.3.1.dist-info/INSTALLER,sha256=zuuue4knoyJ-UwPPXg8fezS7VCrXJQrAP7zeNuwvFQg,4
+awspolicy-0.0.3.1.dist-info/METADATA,sha256=hygDoxsg3OvF6Q3IgtJqRHX_fBwd34aVQ0Khl3qQxUw,8716
+awspolicy-0.0.3.1.dist-info/RECORD,,
+awspolicy-0.0.3.1.dist-info/WHEEL,sha256=NzFAKnL7g-U64xnS1s5e3mJnxKpOTeOtlXdFwS9yNXI,92
+awspolicy-0.0.3.1.dist-info/top_level.txt,sha256=_sbhpP9wNKca_YfDd-aeAO6rb8mb19snL-0OmLBL8QI,10
+awspolicy/__init__.py,sha256=sSXvBz7ZqHj2X1eIVrcmLiyawF4ZdMvmQLzh1mKK3Cg,107
+awspolicy/__pycache__/__init__.cpython-38.pyc,,
+awspolicy/__pycache__/aws_policy_modules.cpython-38.pyc,,
+awspolicy/aws_policy_modules.py,sha256=BpLbumJ8r2CtHaOLyDj_QsgJ1BXZIaF9g2KH9Y7H3To,5244
