@@ -1,1 +1,0 @@
-from awspolicy.aws_policy_modules import Statement, PolicyBase, KmsPolicy, BucketPolicy, IamRoleTrustPolicy
