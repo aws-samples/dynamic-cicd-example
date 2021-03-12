@@ -7,7 +7,7 @@
 ## Instructions ##
 * Clone the Repo
 * Unzip the files 
-* Commit the files to your BitBucket Repository
+* Commit the dynamic-cicd-repo unzipped contents to your BitBucket Repository
 * Follow the blog post here:
 
 
