@@ -2,7 +2,8 @@
 
 ## Pre-requisites ##
 * Ensure you have a BitBucket Cloud Account and Repository
-* 
+
+
 ## Instructions ##
 1. Clone this repository
 1. Unzip the dynamic-cicd-repo.zip file and push it to your Bitbucket repository
