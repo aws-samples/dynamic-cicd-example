@@ -15,8 +15,7 @@ Metadata:
       - pClientName
       - pCFNStackName
       - pCicdAccountId
-      # - pDomainName
-      # - pCertificate
+
     ParameterLabels: 
       pClientName: 
         default: Client Name
@@ -24,10 +23,6 @@ Metadata:
         default: CloudFormation Stack Name
       pCicdAccountId:
         default: CICD Main Account Number
-      # pDomainName: 
-      #   default: API Gateway Custom Domain Name
-      # pCertificate: 
-      #   default: Custom Domain Name ACM Certificate ARN 
 
 Parameters:
 
@@ -43,14 +38,6 @@ Parameters:
     Type: String 
     Description: 'Enter the Main CICD account ID here'
     Default: ''
-
-  # pDomainName:
-  #   Type: String 
-  #   Description: 'Enter your API gateway custom domain name here'
-
-  # pCertificate:
-  #   Type: String 
-  #   Description: 'Enter the ACM certificate ARN for your custom domain name here'
 
 Resources:
 
@@ -86,27 +73,6 @@ Resources:
         - Key: Resource
           Value: !Sub ${AWS::StackName}-cicd-target
 
-  # rDomainName:
-  #   Type: AWS::ApiGateway::DomainName
-  #   Properties: 
-  #     DomainName: !Ref pDomainName
-  #     EndpointConfiguration:
-  #       Types:
-  #         - REGIONAL
-  #     RegionalCertificateArn: !Ref pCertificate
-  #     SecurityPolicy: TLS_1_2
-  #     Tags:
-  #       - Key: Resource
-  #         Value: !Sub ${AWS::StackName}-cicd-target
-
-  # rBasePathMapping:
-  #   Type: AWS::ApiGateway::BasePathMapping
-  #   Properties:
-  #     BasePath: ''
-  #     DomainName: !Ref pDomainName
-  #     RestApiId: !Ref rFrontendApi 
-  #     Stage: !Ref rFrontendStage
-
   rFrontendApi:
     Type: AWS::ApiGateway::RestApi
     Properties:
@@ -120,7 +86,6 @@ Resources:
           info:
             version: "2020-06-09T15:31:21Z"
             title: 'Frontend-API'
-          #host: !Sub '${pDomainName}'
           schemes:
           - "https"
           paths:
