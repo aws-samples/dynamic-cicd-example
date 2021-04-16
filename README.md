@@ -7,7 +7,7 @@
 ## Instructions ##
 1. Clone this repository
 1. Unzip the dynamic-cicd-repo.zip file and push it to your Bitbucket repository
-1. Follow this blog post to set up the dynamic multi-account pipeline
+1. Follow [this](https://aws-blogs.amazon.com/devops/how-soma-global-deploys-their-application-with-a-dynamic-multi-account-pipeline/) blog post to set up the dynamic multi-account pipeline
 
 This is a sample repository to demonstrate a dynamic CI/CD deployment - Below is a brief explanation of the repository structure:
 ```bash
@@ -20,3 +20,6 @@ This is a sample repository to demonstrate a dynamic CI/CD deployment - Below is
 │   ├── buildspec.yml        # File containing the build commands and related settings that CodeBuild uses to run a build.
 │   ├── hello-world          # Project directory for the back-end Go App.
 │   └── template.yaml        # File to create the AWS CloudFormation package in the build stage.
+
+
+If any issues, please open an issue on this repo. 
