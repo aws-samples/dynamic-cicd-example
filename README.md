@@ -7,7 +7,7 @@
 ## Instructions ##
 1. Clone this repository
 1. Unzip the dynamic-cicd-repo.zip file and push it to your Bitbucket repository
-1. Follow [this](https://aws-blogs.amazon.com/devops/how-soma-global-deploys-their-application-with-a-dynamic-multi-account-pipeline/) blog post to set up the dynamic multi-account pipeline
+1. Follow [this](https://aws.amazon.com/blogs/devops/how-soma-global-deploys-their-application-with-a-dynamic-multi-account-pipeline/) blog post to set up the dynamic multi-account pipeline
 
 If any issues, please open an issue on this repo.
 
